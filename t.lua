@@ -5,7 +5,7 @@ ff = io.open('t.lua')
 print(L(function()
 	print('start')
 
-	local t,e = httprequest('http://www.google.com:8080', {
+	local t,e = httprequest('http://www.google.com:80', {
 				pool_size = 20,
 			})
 
