@@ -3,7 +3,6 @@ local os = os
 local table = table
 local pairs = pairs
 local ipairs = ipairs
-local rawset = rawset
 local math = math
 local type = type
 local tonumber = tonumber
@@ -118,7 +117,7 @@ local function httprequest(url, params)
 			if not is_multipart then
 				is_post = true
 				for k,v in pairs(params.data) do
-					rawset(contents, i, k..'='..tostring(v))
+					contents[i] = k..'='..tostring(v)
 					i = i+1
 				end
 				contents = concat(contents, '&')
@@ -126,12 +125,12 @@ local function httprequest(url, params)
 				boundary = '--'..base64_encode(os.time()..math.random()):sub(1,16)
 				for k,v in pairs(params.data) do
 					if type(v) == 'string' then
-						rawset(contents, i, 'Content-Disposition: form-data; name="'..k..'"\r\n\r\n'..v)
+						contents[i] = 'Content-Disposition: form-data; name="'..k..'"\r\n\r\n'..v
 					else
 						if not v.name then v.name = '' end
-						rawset(contents, i, 'Content-Disposition: form-data; name="'..k..'"; filename="'..v.name..
+						contents[i] = 'Content-Disposition: form-data; name="'..k..'"; filename="'..v.name..
 						'"\r\nContent-Type: '..(v.type and v.type or 'application/octet-stream')..';\r\n\r\n'..
-						(type(v.file)=='string' and v.file or ''))
+						(type(v.file)=='string' and v.file or '')
 					end
 					i = i+1
 				end
@@ -277,7 +276,7 @@ local function httprequest(url, params)
 				deflated = true
 			end
 		end
-		rawset(headers, i, line)
+		headers[i] = line
 		i = i+1
 		line,err = sock:receive('*l')
 	end
@@ -306,7 +305,7 @@ local function httprequest(url, params)
 				read_length = read_length - rl
 				buf,err = sock:receive(rl)
 				if buf then
-					rawset(bodys, i, buf)
+					bodys[i] = buf
 					i = i+1
 				else
 					break
@@ -319,7 +318,7 @@ local function httprequest(url, params)
 		local buf,err = sock:receive('*a')
 		i = 1
 		while not err do
-			rawset(bodys, i, buf)
+			bodys[i] = buf
 			--print(buf)
 			i = i+1
 			
