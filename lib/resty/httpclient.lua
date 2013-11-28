@@ -1,3 +1,12 @@
+--[[===============================>
+	lua-resty-httpclient
+
+	version: 0.1
+
+	 author: oneoo
+	  email: oneoo@yo2.com
+
+<===============================]]--
 local io = io
 local os = os
 local table = table
@@ -39,19 +48,13 @@ local function httprequest(url, params)
 	local chunk, protocol = url:match('^(([a-z0-9+]+)://)')
 	url = url:sub((chunk and #chunk or 0) + 1)
 
-	local sock, err = tcp(protocol=='https')
+	local sock, err = tcp()
 	if not sock then
 		return nil, err
 	end
 	
 	if not params.pool_size then params.pool_size = 0 end
-	if params.pool_size then
-		if ngx then
-			sock:setkeepalive(60, params.pool_size)
-		else
-			sock:setkeepalive(params.pool_size)
-		end
-	end
+	
 	if params.timeout then
 		sock:settimeout(params.timeout/(ngx and 1 or 1000))
 	end
@@ -88,7 +91,12 @@ local function httprequest(url, params)
 	-- connect to server
 	local ok, err = sock:connect(hostname, port)
 	if not ok then
+		sock:close()
 		return nil, err
+	end
+
+	if params.host then
+		hostname = params.host
 	end
 	
 	local contents
@@ -254,6 +262,7 @@ local function httprequest(url, params)
 	local i = 1
 	local line,err = sock:receive('*l')
 	local get_body_length = 0
+
 	while not err do
 		if line == '' then break end
 		local te = 'transfer-encod' --ing
@@ -314,8 +323,8 @@ local function httprequest(url, params)
 			
 			line,err = sock:receive('*l')
 		end
-	else
-		local buf,err = sock:receive('*a')
+	elseif get_body_length > 0 then
+		local buf,err = sock:receive(get_body_length < 4096 and get_body_length or 4096)
 		i = 1
 		while not err do
 			bodys[i] = buf
@@ -326,9 +335,14 @@ local function httprequest(url, params)
 			if body_length >= get_body_length then
 				break
 			end
+
+			buf,err = sock:receive(get_body_length-body_length < 4096 and get_body_length-body_length or 4096)
 			
-			buf,err = sock:receive('*a')
-			
+		end
+
+		if err then
+			sock:close()
+			sock = nil
 		end
 
 		if body_length < get_body_length then
@@ -336,7 +350,13 @@ local function httprequest(url, params)
 		end
 	end
 	
-	sock:close()
+	if params.pool_size and sock then
+		if ngx then
+			sock:setkeepalive(60, params.pool_size)
+		else
+			sock:close()
+		end
+	end
 	
 	if zlib then
 		if gziped then
