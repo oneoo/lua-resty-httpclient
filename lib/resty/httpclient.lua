@@ -47,11 +47,6 @@ local function httprequest(url, params)
 	if not params then params = {} end
 	local chunk, protocol = url:match('^(([a-z0-9+]+)://)')
 	url = url:sub((chunk and #chunk or 0) + 1)
-
-	local sock, err = tcp()
-	if not sock then
-		return nil, err
-	end
 	
 	if not params.pool_size then params.pool_size = 0 end
 	
@@ -87,7 +82,12 @@ local function httprequest(url, params)
 		end
 	end
 	if not uri or uri =='' then uri = '/' end
-	
+
+	local sock, err = tcp(ngx and nil or protocol == 'https')
+	if not sock then
+		return nil, err
+	end
+
 	-- connect to server
 	local ok, err = sock:connect(hostname, port)
 	if not ok then
