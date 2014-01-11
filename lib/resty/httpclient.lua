@@ -1,12 +1,3 @@
---[[===============================>
-	lua-resty-httpclient
-
-	version: 0.1
-
-	 author: oneoo
-	  email: oneoo@yo2.com
-
-<===============================]]--
 local io = io
 local os = os
 local table = table
@@ -43,10 +34,17 @@ module(...)
 
 _VERSION = '0.1'
 
-local function httprequest(url, params)
+local mt = { __index = _M }
+
+function httprequest(url, params)
 	if not params then params = {} end
 	local chunk, protocol = url:match('^(([a-z0-9+]+)://)')
 	url = url:sub((chunk and #chunk or 0) + 1)
+
+	local sock, err = tcp(protocol=='https')
+	if not sock then
+		return nil, err
+	end
 	
 	if not params.pool_size then params.pool_size = 0 end
 	
@@ -82,12 +80,7 @@ local function httprequest(url, params)
 		end
 	end
 	if not uri or uri =='' then uri = '/' end
-
-	local sock, err = tcp(ngx and nil or protocol == 'https')
-	if not sock then
-		return nil, err
-	end
-
+	
 	-- connect to server
 	local ok, err = sock:connect(hostname, port)
 	if not ok then
@@ -181,13 +174,12 @@ local function httprequest(url, params)
 	
 	--send request
 	local bytes, err = sock:send(concat(request_headers, '\r\n')..'\r\n\r\n')
-	--print(concat(request_headers, '\r\n')..'\r\n\r\n')
+
 	if err then
 		sock:close()
 		return nil, err
 	end
-	
-	--send body (if exists)
+
 	if send_file_length_sum == 0 then
 		if contents then
 			bytes, err = sock:send(contents)
@@ -200,10 +192,6 @@ local function httprequest(url, params)
 		local i,k,v=1
 		bytes, err = sock:send('--'..boundary..'\r\n')
 
-		if err then
-			sock:close()
-			return nil, err
-		end
 		for k,v in pairs(params.data) do
 			if i > 1 then
 				bytes, err = sock:send('\r\n--'..boundary..'\r\n')
@@ -248,11 +236,6 @@ local function httprequest(url, params)
 			i = i+1
 		end
 		bytes, err = sock:send('\r\n--'..boundary..'--')
-
-		if err then
-			sock:close()
-			return nil, err
-		end
 	end
 	
 	local is_chunked = false
@@ -379,4 +362,11 @@ local function httprequest(url, params)
 	return bodys, headers, rterr
 end
 
-return httprequest
+local class_mt = {
+    -- to prevent use of casual module global variables
+    __newindex = function (table, key, val)
+        error('attempt to write to undeclared variable "' .. key .. '"')
+    end
+}
+
+setmetatable(_M, class_mt)
