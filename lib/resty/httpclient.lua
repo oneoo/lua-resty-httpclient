@@ -14,6 +14,11 @@ local tcp
 local base64_encode = base64_encode
 local insert=table.insert
 local concat=table.concat
+local match = string.match
+local char = string.char
+local function trim(s)
+	return match(s,'^()%s*$') and '' or match(s,'^%s*(.*%S)')
+end
 
 if ngx and ngx.say then
 	tcp = ngx.socket.tcp
@@ -41,15 +46,26 @@ function httprequest(url, params)
 	local chunk, protocol = url:match('^(([a-z0-9+]+)://)')
 	url = url:sub((chunk and #chunk or 0) + 1)
 
-	local sock, err = tcp(protocol=='https')
+	local sock, err
+	if not params['ssl_cert'] then
+		sock, err = tcp(protocol=='https')
+	else
+		sock, err = tcp(params['ssl_cert'], params['ssl_key'], params['ssl_pw'])
+	end
 	if not sock then
 		return nil, err
 	end
 	
 	if not params.pool_size then params.pool_size = 0 end
-	
+	if params.pool_size then
+		if ngx then
+			sock:setkeepalive(60, params.pool_size)
+		else
+			sock:setkeepalive(params.pool_size)
+		end
+	end
 	if params.timeout then
-		sock:settimeout(params.timeout/(ngx and 1 or 1000))
+		sock:settimeout(params.timeout)
 	end
 	
 	local host = url:match('^([^/]+)')
@@ -169,7 +185,15 @@ function httprequest(url, params)
 		elseif is_multipart then
 			insert(request_headers, 'Content-Type: multipart/form-data; boundary='..boundary)
 		end
-		insert(request_headers, 'Content-Length: '..#contents+send_file_length_sum)
+
+		if type(contents) == 'string' then
+			insert(request_headers, 'Content-Length: '..#contents+send_file_length_sum)
+		else
+			contents:seek('set', 0)
+			local content_length = contents:seek('end')
+			insert(request_headers, 'Content-Length: '..content_length)
+			contents:seek('set', 0)
+		end
 	end
 	
 	--send request
@@ -182,10 +206,26 @@ function httprequest(url, params)
 
 	if send_file_length_sum == 0 then
 		if contents then
-			bytes, err = sock:send(contents)
-			if err then
-				sock:close()
-				return nil, err
+			if type(contents) == 'string' then
+				bytes, err = sock:send(contents)
+				if err then
+					sock:close()
+					return nil, err
+				end
+			else
+				local buf = contents:read(40960)
+				while buf do
+					bytes, err = sock:send(buf)
+
+					if err then
+						contents:close()
+						sock:close()
+						return nil, err
+					end
+
+					buf = contents:read(40960)
+				end
+				contents:close()
 			end
 		end
 	else
@@ -220,17 +260,21 @@ function httprequest(url, params)
 					return nil, err
 				end
 				if t~='string' then
-					local buf = v.file:read(4096)
+					local buf = v.file:read(40960)
 					while buf do
 						bytes, err = sock:send(buf)
 
 						if err then
+							v.file:close()
+							v.file = nil
 							sock:close()
 							return nil, err
 						end
-						buf = v.file:read(4096)
+
+						buf = v.file:read(40960)
 					end
 					v.file:close()
+					v.file = nil
 				end
 			end
 			i = i+1
@@ -244,6 +288,10 @@ function httprequest(url, params)
 	local headers = {}
 	local i = 1
 	local line,err = sock:receive('*l')
+	if err then
+		sock:close()
+		return nil, err
+	end
 	local get_body_length = 0
 
 	while not err do
@@ -271,8 +319,13 @@ function httprequest(url, params)
 		headers[i] = line
 		i = i+1
 		line,err = sock:receive('*l')
+		if err then
+			sock:close()
+			return nil, err
+		end
 	end
 
+	err = nil
 	local bodys = {}
 	local body_length = 0
 	local buf
@@ -284,7 +337,8 @@ function httprequest(url, params)
 		while not err do
 			line,err = sock:receive('*l')
 			if err then
-				break
+				sock:close()
+				return nil, err
 			end
 			
 			local read_length = tonumber(line, 16)
@@ -293,7 +347,7 @@ function httprequest(url, params)
 			
 			while read_length > 0 do
 				local rl = read_length
-				if rl > 4096 then rl = 4096 end
+				if rl > 40960 then rl = 40960 end
 				read_length = read_length - rl
 				buf,err = sock:receive(rl)
 				if buf then
@@ -305,9 +359,19 @@ function httprequest(url, params)
 			end
 			
 			line,err = sock:receive('*l')
+
+			if err then
+				sock:close()
+				return nil, err
+			end
 		end
+		if err then rterr = err end
 	elseif get_body_length > 0 then
-		local buf,err = sock:receive(get_body_length < 4096 and get_body_length or 4096)
+		local buf,err = sock:receive(get_body_length < 40960 and get_body_length or 40960)
+		if err then
+			sock:close()
+			return nil, err
+		end
 		i = 1
 		while not err do
 			bodys[i] = buf
@@ -319,8 +383,12 @@ function httprequest(url, params)
 				break
 			end
 
-			buf,err = sock:receive(get_body_length-body_length < 4096 and get_body_length-body_length or 4096)
+			buf,err = sock:receive(get_body_length-body_length < 40960 and get_body_length-body_length or 40960)
 			
+			if err then
+				sock:close()
+				return nil, err
+			end
 		end
 
 		if err then
@@ -341,32 +409,56 @@ function httprequest(url, params)
 		end
 	end
 	
-	if zlib then
-		if gziped then
-			i = 1
-			local maxi = #bodys
-			local stream = zlib.inflate(function()
-					i=i+1
-					if i > maxi+1 then return nil end
-					return bodys[i-1]
-			end)
-			bodys = stream:read('*a')
-			stream:close()
-		elseif deflated then
-			bodys = zlib.decompress(concat(bodys),-8)
+	if zlib and (gziped or deflated) then
+		if deflated and bodys[1]:byte(1) ~= 120 and bodys[1]:byte(1) ~= 156 then
+			bodys[1] = char(120,156) .. bodys[1]
 		end
+
+		i = 1
+		local maxi = #bodys
+		local stream = zlib.inflate(function()
+				i=i+1
+				if i > maxi+1 then return nil end
+				return bodys[i-1]
+		end)
+		bodys = stream:read('*a')
+		stream:close()
 	end
 	
 	if type(bodys) == 'table' then bodys = concat(bodys) end
 	
-	return bodys, headers, rterr
+	--return bodys, headers, rterr
+	local res = {}
+	res.body = bodys
+	res.status = 0
+	if headers and headers[1] then
+		local i = headers[1]:find(' ', 1, true)
+		if i then
+			local e = headers[1]:find(' ', i+1, true)
+			res.status = e and tonumber(headers[1]:sub(i+1, e)) or 0
+		else
+			res.status = 0
+		end
+
+		local header = {}
+		for k,v in ipairs(headers) do
+			local i = v:find(':', 1, true)
+			if i then
+				header[v:sub(1,i-1):lower()] = trim(v:sub(i+1))
+			end
+		end
+
+		res.header = header
+	end
+
+	return res, rterr
 end
 
 local class_mt = {
-    -- to prevent use of casual module global variables
-    __newindex = function (table, key, val)
-        error('attempt to write to undeclared variable "' .. key .. '"')
-    end
+	-- to prevent use of casual module global variables
+	__newindex = function (table, key, val)
+		error('attempt to write to undeclared variable "' .. key .. '"')
+	end
 }
 
 setmetatable(_M, class_mt)

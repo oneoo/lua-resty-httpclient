@@ -1,16 +1,17 @@
 L = require('coevent')
-local httprequest = require('httpclient')
+local httprequest = require('lib.resty.httpclient').httprequest
 
-ff = io.open('t.lua')
-print(L(function()
+L(function()
 	print('start')
 
-	local t,e = httprequest('https://www.google.com:80', {
-				pool_size = 20,
-			})
+	local t,e = httprequest('https://www.google.com', {
+		pool_size = 20, --keepalive
+		data = io.open('t.lua')
+	})
 
-	print('readed:', #t, 'Bytes', t)
+	for k,v in pairs(t) do
+		print('',k,v)
+	end
 	
-end
-))
-print('end')
+	print('end')
+end)
